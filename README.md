@@ -1,16 +1,34 @@
-# Tiny SSL Server
+# Tiny HTTP/HTTPS Server
 
-A simple HTTPS server written in C using OpenSSL for educational purposes.
+A simple HTTP/HTTPS server written in C using OpenSSL for educational purposes. Supports both secure (HTTPS) and plain (HTTP) modes.
 
-## Security Notice
+## Running Modes
 
-**⚠️ IMPORTANT: This project requires SSL certificates that are NOT included in this repository for security reasons.**
+### HTTPS Mode (Default)
+Secure server with SSL/TLS encryption - requires certificates.
+
+### HTTP Mode (--no-tls flag)
+Plain HTTP server without encryption - no certificates needed.
 
 ## Setup Instructions
 
-### 1. Generate SSL Certificates
+### Option 1: Quick Start (HTTP Mode)
 
-Before running the server, you need to generate SSL certificates:
+```bash
+# Build the server
+make
+
+# Run as plain HTTP server (no certificates needed)
+./.bin/tinyserver --no-tls
+```
+
+Test at: `http://localhost:8080`
+
+### Option 2: Secure HTTPS Mode
+
+**⚠️ IMPORTANT: Requires SSL certificates (NOT included for security reasons)**
+
+#### 1. Generate SSL Certificates
 
 ```bash
 # Generate private key (KEEP THIS SECRET!)
@@ -26,23 +44,24 @@ openssl x509 -req -days 365 -in server.csr -signkey server.key -out server.crt
 openssl req -new -x509 -days 365 -key server.key -out ca.crt
 ```
 
-### 2. Build and Run
+#### 2. Run HTTPS Server
 
 ```bash
 # Build the server
 make
 
-# Run the server
+# Run as HTTPS server (default mode)
 ./.bin/tinyserver
 ```
 
-### 3. Test the Server
-
-Open your browser and navigate to:
-- `https://localhost:8080`
-- `https://localhost:8080/index.html`
+Test at: `https://localhost:8080`
 
 **Note:** You'll get a security warning because it's a self-signed certificate. This is normal for development.
+
+## Command Line Options
+
+- **No arguments**: Run as HTTPS server (requires certificates)
+- **--no-tls**: Run as plain HTTP server (no certificates needed)
 
 ## File Structure
 
@@ -77,3 +96,4 @@ This project demonstrates:
 - HTTP protocol handling
 - Certificate-based authentication
 - Proper build system with Makefiles
+- Command line argument parsing

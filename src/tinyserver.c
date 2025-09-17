@@ -36,6 +36,10 @@
 #define CERT_FILE "server.crt"  // Server's public certificate file
 #define KEY_FILE "server.key"   // Server's private key file  
 #define CA_FILE "ca.crt"        // Certificate Authority file (trusted root)
+#define BUFFER_SIZE 4096        // Size of buffer for HTTP requests/responses
+
+// Global flag to enable/disable TLS (can be set via command line)
+int use_tls = 1;  // 1 = use TLS/SSL, 0 = plain HTTP
 
 // =============================================================================
 // FUNCTION DECLARATIONS AND EXPLANATIONS
@@ -148,6 +152,20 @@ void configure_context(SSL_CTX *ctx) {
 int main(int argc, char **argv) {
     
     // =============================================================================
+    // COMMAND LINE ARGUMENT PARSING
+    // =============================================================================
+    
+    // Check for --no-tls flag to disable SSL/TLS
+    int i;
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--no-tls") == 0) {
+            use_tls = 0;
+            printf("TLS disabled - running as plain HTTP server\n");
+            break;
+        }
+    }
+    
+    // =============================================================================
     // VARIABLE DECLARATIONS
     // =============================================================================
     // In C, declare all variables at the beginning of a block (C89/C90 rule)
@@ -155,21 +173,28 @@ int main(int argc, char **argv) {
     int sock;                    // Socket file descriptor (like a handle)
     struct sockaddr_in addr;     // Address structure (IP + port info)
     unsigned int len = sizeof(addr); // Size of address structure
-    SSL_CTX *ctx;               // SSL context (our SSL settings)
-    SSL *ssl;                   // SSL connection object
+    SSL_CTX *ctx = NULL;        // SSL context (our SSL settings) - NULL if no TLS
+    SSL *ssl = NULL;            // SSL connection object - NULL if no TLS
 
     // =============================================================================
     // INITIALIZATION PHASE
     // =============================================================================
     
-    // Step 1: Initialize OpenSSL library
-    init_openssl();
-    
-    // Step 2: Create SSL context (settings container)
-    ctx = create_context();
-    
-    // Step 3: Configure SSL context (load certificates)
-    configure_context(ctx);
+    // Only initialize SSL if TLS is enabled
+    if (use_tls) {
+        // Step 1: Initialize OpenSSL library
+        init_openssl();
+        
+        // Step 2: Create SSL context (settings container)
+        ctx = create_context();
+        
+        // Step 3: Configure SSL context (load certificates)
+        configure_context(ctx);
+        
+        printf("TLS enabled - running as HTTPS server\n");
+    } else {
+        printf("TLS disabled - running as HTTP server\n");
+    }
 
     // =============================================================================
     // SOCKET CREATION AND SETUP
@@ -180,6 +205,14 @@ int main(int argc, char **argv) {
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
         perror("Unable to create socket");
+        exit(EXIT_FAILURE);
+    }
+
+    // Set SO_REUSEADDR to allow reusing the address immediately
+    // This prevents "Address already in use" error when restarting server
+    int opt = 1;
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("Unable to set socket options");
         exit(EXIT_FAILURE);
     }
 
@@ -221,39 +254,77 @@ int main(int argc, char **argv) {
             exit(EXIT_FAILURE);
         }
 
-        // Create new SSL object for this client connection
-        ssl = SSL_new(ctx);
-        
-        // Associate SSL object with client socket
-        // This connects the SSL encryption to the network socket
-        SSL_set_fd(ssl, client);
+        if (use_tls) {
+            // =============================================================================
+            // TLS/SSL MODE - Encrypted communication
+            // =============================================================================
+            
+            // Create new SSL object for this client connection
+            ssl = SSL_new(ctx);
+            
+            // Associate SSL object with client socket
+            SSL_set_fd(ssl, client);
 
-        // Perform SSL handshake with client
-        // This negotiates encryption and verifies certificates
-        if (SSL_accept(ssl) <= 0) {
-            // If handshake fails, print error but continue serving other clients
-            ERR_print_errors_fp(stderr);
+            // Perform SSL handshake with client
+            if (SSL_accept(ssl) <= 0) {
+                ERR_print_errors_fp(stderr);
+            } else {
+                // SSL handshake successful - communicate securely
+                char request_buffer[BUFFER_SIZE] = {0};
+                int bytes = SSL_read(ssl, request_buffer, sizeof(request_buffer) - 1);
+                
+                if (bytes > 0) {
+                    request_buffer[bytes] = '\0';
+                    printf("Received HTTPS request:\n%s\n", request_buffer);
+                    
+                    // Parse and respond with HTTP
+                    char method[16] = {0}, url[256] = {0};
+                    sscanf(request_buffer, "%s %s", method, url);
+                    
+                    char html_content[1024];
+                    sprintf(html_content,
+                        "<!DOCTYPE html><html><head><title>Tiny SSL Server</title></head>"
+                        "<body><h1>Secure HTTPS Server!</h1><p>Method: %s</p><p>URL: %s</p></body></html>",
+                        method, url);
+                    
+                    char http_response[BUFFER_SIZE];
+                    sprintf(http_response,
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %zu\r\n\r\n%s",
+                        strlen(html_content), html_content);
+                    
+                    SSL_write(ssl, http_response, strlen(http_response));
+                }
+            }
         } else {
-            // SSL handshake successful - we can now communicate securely
+            // =============================================================================
+            // PLAIN HTTP MODE - No encryption
+            // =============================================================================
             
-            // Create buffer to store received data
-            // {0} initializes all bytes to zero
-            char buf[256] = {0};
-            
-            // Read encrypted data from client
-            // SSL_read automatically decrypts the data
-            int bytes = SSL_read(ssl, buf, sizeof(buf));
+            // Read plain HTTP request directly from socket
+            char request_buffer[BUFFER_SIZE] = {0};
+            int bytes = read(client, request_buffer, sizeof(request_buffer) - 1);
             
             if (bytes > 0) {
-                // Print what we received from client
-                printf("Received: %s\n", buf);
+                request_buffer[bytes] = '\0';
+                printf("Received HTTP request:\n%s\n", request_buffer);
                 
-                // Prepare response message
-                const char *reply = "Hello from server!";
+                // Parse and respond with HTTP
+                char method[16] = {0}, url[256] = {0};
+                sscanf(request_buffer, "%s %s", method, url);
                 
-                // Send encrypted response back to client
-                // SSL_write automatically encrypts the data
-                SSL_write(ssl, reply, strlen(reply));
+                char html_content[1024];
+                sprintf(html_content,
+                    "<!DOCTYPE html><html><head><title>Tiny HTTP Server</title></head>"
+                    "<body><h1>Plain HTTP Server!</h1><p>Method: %s</p><p>URL: %s</p></body></html>",
+                    method, url);
+                
+                char http_response[BUFFER_SIZE];
+                sprintf(http_response,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %zu\r\n\r\n%s",
+                    strlen(html_content), html_content);
+                
+                // Send plain HTTP response directly to socket
+                write(client, http_response, strlen(http_response));
             }
         }
 
@@ -261,14 +332,13 @@ int main(int argc, char **argv) {
         // CONNECTION CLEANUP
         // =============================================================================
         
-        // Properly shutdown SSL connection
-        // This sends SSL close notification to client
-        SSL_shutdown(ssl);
+        // Clean up SSL resources only if TLS is enabled
+        if (use_tls && ssl) {
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+        }
         
-        // Free SSL object memory
-        SSL_free(ssl);
-        
-        // Close client socket
+        // Close client socket (always needed)
         close(client);
         
         // Loop continues to accept next client...
@@ -280,8 +350,12 @@ int main(int argc, char **argv) {
     // In a real server, you'd have signal handlers to break the loop gracefully
     
     close(sock);           // Close server socket
-    SSL_CTX_free(ctx);     // Free SSL context
-    cleanup_openssl();     // Cleanup OpenSSL library
+    
+    // Clean up SSL resources only if TLS was enabled
+    if (use_tls && ctx) {
+        SSL_CTX_free(ctx);     // Free SSL context
+        cleanup_openssl();     // Cleanup OpenSSL library
+    }
 
     return 0;  // Return success (though this line never executes)
 }
